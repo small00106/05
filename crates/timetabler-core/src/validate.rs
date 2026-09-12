@@ -6,11 +6,17 @@
 //! 3. 连堂需求的课节必须两两相邻成对，且不跨中午。
 //! 4. 每个班每天同一科目不超过两节。
 //! 5. 每个需求的实际排课节数必须等于周课时需求（完整性）。
+//! 6. 需求指定了教室就必须用那一间（如实验课必须在实验室）。
+//!
+//! 前置条件：输入（[`Problem`]）自身引用完整。`validate` 会先跑
+//! [`Problem::check_integrity`]，发现引用越界等问题时只报这些
+//! （[`ViolationKind::InvalidProblem`]），不在残缺输入上继续检查课表。
 //!
 //! 每条违反记录都说明：谁、在哪个时间槽、违反了哪条约束，
 //! 可用 [`Violation::describe`] 生成中文描述。
 
 use crate::bitmap::Bitmap;
+use crate::integrity::IntegrityError;
 use crate::model::*;
 
 /// 违反的硬约束类别，附带相关实体。
@@ -38,6 +44,14 @@ pub enum ViolationKind {
         expected: u32,
         actual: u32,
     },
+    /// 课节未使用需求指定的教室。
+    RoomMismatch {
+        requirement: RequirementId,
+        expected: RoomId,
+        actual: RoomId,
+    },
+    /// 输入（Problem）自身不完整：引用越界等。出现此类违反时校验器不会检查课表。
+    InvalidProblem(IntegrityError),
     /// 课表数据本身非法：时间槽越界。
     SlotOutOfRange { slot: u32 },
     /// 课表数据本身非法：引用了不存在的需求。
@@ -107,6 +121,18 @@ impl Violation {
                 expected,
                 actual
             ),
+            ViolationKind::RoomMismatch {
+                requirement,
+                expected,
+                actual,
+            } => format!(
+                "教室不符：{} 在{}被排在{}，但需求指定了 {}",
+                p.requirement_desc(*requirement),
+                at,
+                p.room_name(*actual),
+                p.room_name(*expected)
+            ),
+            ViolationKind::InvalidProblem(e) => format!("输入非法：{}", e.describe(p)),
             ViolationKind::SlotOutOfRange { slot } => format!(
                 "数据非法：时间槽 {} 超出每周总槽数 {}",
                 slot,
@@ -129,7 +155,22 @@ const DAILY_SUBJECT_LIMIT: u32 = 2;
 ///
 /// 实现要点：每个教师 / 班级 / 教室一个占用位图，逐课节置位检测冲突；
 /// 同班同科目的日计数用扁平数组（不用 `HashMap`）。时间复杂度 O(课节数)。
+///
+/// 本函数对任意输入都不会 panic：先检查 [`Problem`] 的引用完整性，
+/// 有问题则只返回 [`ViolationKind::InvalidProblem`] 记录，不再检查课表。
 pub fn validate(problem: &Problem, tt: &Timetable) -> Vec<Violation> {
+    // 输入完整性是前置条件：有问题就只报这些，不在残缺数据上继续。
+    let integrity_errors = problem.check_integrity();
+    if !integrity_errors.is_empty() {
+        return integrity_errors
+            .into_iter()
+            .map(|e| Violation {
+                kind: ViolationKind::InvalidProblem(e),
+                slot: None,
+            })
+            .collect();
+    }
+
     let nslots = problem.slot_count();
     let ndays = problem.schedule.days as usize;
     let nsubjects = problem.subjects.len();
@@ -210,6 +251,20 @@ pub fn validate(problem: &Problem, tt: &Timetable) -> Vec<Violation> {
                 },
                 slot: Some(lesson.slot),
             });
+        }
+
+        // 6. 指定教室：需求钉了教室就必须用那一间。
+        if let Some(expected) = req.room {
+            if lesson.room != expected {
+                violations.push(Violation {
+                    kind: ViolationKind::RoomMismatch {
+                        requirement: req.id,
+                        expected,
+                        actual: lesson.room,
+                    },
+                    slot: Some(lesson.slot),
+                });
+            }
         }
 
         // 4. 同班同科目日计数（上限在循环后统一判定）。

@@ -331,3 +331,172 @@ fn corrupted_fixture_is_caught() {
         "应报出班级冲突：{v:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 输入（Problem）引用完整性：validate 对任何输入都不允许 panic。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn valid_problems_have_clean_integrity() {
+    assert_eq!(tiny_problem().check_integrity(), Vec::new());
+    let (p, _) = testgen::generate(42);
+    assert_eq!(p.check_integrity(), Vec::new());
+}
+
+#[test]
+fn validate_reports_all_broken_requirement_refs() {
+    let mut p = tiny_problem();
+    p.requirements[0].teacher = TeacherId(7); // 共 3 名教师
+    p.requirements[1].class = ClassId(9); // 共 2 个班
+    p.requirements[2].subject = SubjectId(8); // 共 2 门科目
+    p.requirements[3].room = Some(RoomId(42)); // 共 2 间教室
+    let v = validate(&p, &valid_timetable());
+    // 只报完整性问题（不 panic、不混报课表问题），四个坏引用各一条。
+    let errors: Vec<&IntegrityError> = v
+        .iter()
+        .map(|x| match &x.kind {
+            ViolationKind::InvalidProblem(e) => e,
+            other => panic!("不应报课表问题：{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        errors,
+        vec![
+            &IntegrityError::RequirementTeacherOutOfRange {
+                requirement: RequirementId(0),
+                teacher: 7,
+            },
+            &IntegrityError::RequirementClassOutOfRange {
+                requirement: RequirementId(1),
+                class: 9,
+            },
+            &IntegrityError::RequirementSubjectOutOfRange {
+                requirement: RequirementId(2),
+                subject: 8,
+            },
+            &IntegrityError::RequirementRoomOutOfRange {
+                requirement: RequirementId(3),
+                room: 42,
+            },
+        ]
+    );
+}
+
+#[test]
+fn validate_handles_teacher_ref_beyond_teacher_list() {
+    // 回归：teachers 仅 1 人、需求引用 TeacherId(7)，原先在 validate 里直接 panic。
+    let mut p = tiny_problem();
+    p.teachers.truncate(1);
+    p.requirements[0].teacher = TeacherId(7);
+    let v = validate(&p, &valid_timetable());
+    assert!(v.iter().any(|x| matches!(
+        x.kind,
+        ViolationKind::InvalidProblem(IntegrityError::RequirementTeacherOutOfRange {
+            teacher: 7,
+            ..
+        })
+    )));
+}
+
+#[test]
+fn integrity_catches_bad_home_room_and_availability_len() {
+    let mut p = tiny_problem();
+    p.classes[0].home_room = RoomId(99);
+    p.teachers[1].unavailable = Bitmap::new(3); // 应等于一周槽数 8
+    let errors = p.check_integrity();
+    assert!(errors.contains(&IntegrityError::ClassHomeRoomOutOfRange {
+        class: ClassId(0),
+        room: 99,
+    }));
+    assert!(errors.contains(&IntegrityError::TeacherAvailabilityLenMismatch {
+        teacher: TeacherId(1),
+        expected: 8,
+        actual: 3,
+    }));
+    // validate 同样只报完整性问题、不 panic。
+    let v = validate(&p, &valid_timetable());
+    assert!(v
+        .iter()
+        .all(|x| matches!(x.kind, ViolationKind::InvalidProblem(_))));
+}
+
+#[test]
+fn integrity_catches_requirement_id_mismatch_and_bad_schedule() {
+    let mut p = tiny_problem();
+    p.requirements[2].id = RequirementId(7);
+    assert_eq!(
+        p.check_integrity(),
+        vec![IntegrityError::RequirementIdMismatch {
+            position: 2,
+            id: 7,
+        }]
+    );
+
+    // 绕过 WeekSchedule::new 的断言直接改字段：每天 0 节。
+    let mut p2 = tiny_problem();
+    p2.schedule.periods_per_day = 0;
+    let v = validate(&p2, &valid_timetable());
+    assert_eq!(v.len(), 1);
+    assert!(matches!(
+        v[0].kind,
+        ViolationKind::InvalidProblem(IntegrityError::InvalidSchedule { .. })
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// 硬约束 6：需求指定的教室必须遵守。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn detects_room_mismatch() {
+    let mut p = tiny_problem();
+    p.requirements[1].room = Some(RoomId(1)); // 甲班数学指定教室二
+    let tt = valid_timetable(); // 但该课排在教室一
+    let v = validate(&p, &tt);
+    assert_eq!(
+        kinds_of(&v),
+        vec![&ViolationKind::RoomMismatch {
+            requirement: RequirementId(1),
+            expected: RoomId(1),
+            actual: RoomId(0),
+        }]
+    );
+    let msg = v[0].describe(&p);
+    assert!(msg.contains("教室不符"), "{msg}");
+    assert!(msg.contains("教室二"), "{msg}");
+
+    // 指定教室用对了就无违反。
+    p.requirements[1].room = Some(RoomId(0));
+    assert_eq!(validate(&p, &tt), Vec::<Violation>::new());
+}
+
+#[test]
+fn fixture_room_pin_is_enforced() {
+    // 回归：把高一(1)班的物理实验从物理实验室改排到本班普通教室，原先 0 违反。
+    let (p, tt) = testgen::generate(42);
+    let lab_subject = p.subjects.iter().find(|s| s.name == "物理实验").unwrap().id;
+    let req = p
+        .requirements
+        .iter()
+        .find(|r| r.class == ClassId(0) && r.subject == lab_subject)
+        .expect("夹具中高一(1)班有物理实验需求");
+    let pinned = req.room.expect("实验课应指定教室");
+    let home = p.classes[0].home_room;
+    let mut bad = tt.clone();
+    let mut moved = 0;
+    for l in &mut bad.lessons {
+        if l.requirement == req.id {
+            l.room = home;
+            moved += 1;
+        }
+    }
+    assert_eq!(moved, 2); // 连堂两节一起挪
+    let v = validate(&p, &bad);
+    assert_eq!(v.len(), 2, "应只有两条教室不符：{v:?}");
+    assert!(v.iter().all(|x| x.kind
+        == ViolationKind::RoomMismatch {
+            requirement: req.id,
+            expected: pinned,
+            actual: home,
+        }));
+}

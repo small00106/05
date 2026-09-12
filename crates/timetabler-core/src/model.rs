@@ -45,7 +45,7 @@ pub struct WeekSchedule {
 
 impl WeekSchedule {
     pub fn new(days: u8, periods_per_day: u8, lunch_after_period: u8) -> Self {
-        assert!(days >= 1 && days <= 7, "每周天数应在 1..=7");
+        assert!((1..=7).contains(&days), "每周天数应在 1..=7");
         assert!(periods_per_day >= 1, "每天至少 1 节");
         assert!(
             lunch_after_period <= periods_per_day,
@@ -152,6 +152,10 @@ pub struct Requirement {
     /// 是否连堂：为 true 时课节必须两两相邻成对，且不跨中午。
     pub double_period: bool,
     /// 指定教室（如实验室、操场）；None 表示用本班教室。
+    ///
+    /// 这是硬约束：课节必须排在指定的这一间，否则校验器报
+    /// [`crate::ViolationKind::RoomMismatch`]。（当前按「指定到间」处理；
+    /// 「同类型教室任选一间」的诉求留待后续引入教室类型。）
     pub room: Option<RoomId>,
 }
 
