@@ -6,7 +6,8 @@
 //! 3. 连堂需求的课节必须两两相邻成对，且不跨中午。
 //! 4. 每个班每天同一科目不超过两节。
 //! 5. 每个需求的实际排课节数必须等于周课时需求（完整性）。
-//! 6. 需求指定了教室就必须用那一间（如实验课必须在实验室）。
+//! 6. 每节课必须排在需求规定的教室：指定的教室（如实验室）或本班教室
+//!    （即 `Requirement::room_or_home`，Some 与 None 两个分支同等约束）。
 //!
 //! 前置条件：输入（[`Problem`]）自身引用完整。`validate` 会先跑
 //! [`Problem::check_integrity`]，发现引用越界等问题时只报这些
@@ -44,7 +45,7 @@ pub enum ViolationKind {
         expected: u32,
         actual: u32,
     },
-    /// 课节未使用需求指定的教室。
+    /// 课节未排在需求规定的教室（指定教室或本班教室）。
     RoomMismatch {
         requirement: RequirementId,
         expected: RoomId,
@@ -126,7 +127,7 @@ impl Violation {
                 expected,
                 actual,
             } => format!(
-                "教室不符：{} 在{}被排在{}，但需求指定了 {}",
+                "教室不符：{} 在{}被排在{}，但应排在 {}",
                 p.requirement_desc(*requirement),
                 at,
                 p.room_name(*actual),
@@ -253,18 +254,17 @@ pub fn validate(problem: &Problem, tt: &Timetable) -> Vec<Violation> {
             });
         }
 
-        // 6. 指定教室：需求钉了教室就必须用那一间。
-        if let Some(expected) = req.room {
-            if lesson.room != expected {
-                violations.push(Violation {
-                    kind: ViolationKind::RoomMismatch {
-                        requirement: req.id,
-                        expected,
-                        actual: lesson.room,
-                    },
-                    slot: Some(lesson.slot),
-                });
-            }
+        // 6. 教室归属：课节必须排在需求规定的教室（指定教室或本班教室）。
+        let expected_room = req.room_or_home(&problem.classes[c]);
+        if lesson.room != expected_room {
+            violations.push(Violation {
+                kind: ViolationKind::RoomMismatch {
+                    requirement: req.id,
+                    expected: expected_room,
+                    actual: lesson.room,
+                },
+                slot: Some(lesson.slot),
+            });
         }
 
         // 4. 同班同科目日计数（上限在循环后统一判定）。

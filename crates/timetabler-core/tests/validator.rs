@@ -164,12 +164,20 @@ fn detects_room_conflict() {
     let p = tiny_problem();
     let mut tt = valid_timetable();
     // 甲班数学(教师丙, 槽4)挪到槽6并借用教室二：乙班数学(教师乙)正占用。
+    // 借教室同时也违反了教室归属（本班教室是教室一），两条都应报出。
     tt.lessons[2].slot = Slot(6);
     tt.lessons[2].room = RoomId(1);
     let v = validate(&p, &tt);
     assert_eq!(
         kinds_of(&v),
-        vec![&ViolationKind::RoomConflict { room: RoomId(1) }]
+        vec![
+            &ViolationKind::RoomMismatch {
+                requirement: RequirementId(1),
+                expected: RoomId(0),
+                actual: RoomId(1),
+            },
+            &ViolationKind::RoomConflict { room: RoomId(1) },
+        ]
     );
 }
 
@@ -468,6 +476,61 @@ fn detects_room_mismatch() {
     // 指定教室用对了就无违反。
     p.requirements[1].room = Some(RoomId(0));
     assert_eq!(validate(&p, &tt), Vec::<Violation>::new());
+}
+
+#[test]
+fn detects_home_room_mismatch() {
+    // None 分支：未指定教室的需求也必须用本班教室。
+    let p = tiny_problem();
+    let mut tt = valid_timetable();
+    // 甲班数学(需求1, 未指定教室)从本班教室一挪到当时空着的教室二。
+    tt.lessons[2].room = RoomId(1);
+    let v = validate(&p, &tt);
+    assert_eq!(
+        kinds_of(&v),
+        vec![&ViolationKind::RoomMismatch {
+            requirement: RequirementId(1),
+            expected: RoomId(0),
+            actual: RoomId(1),
+        }]
+    );
+}
+
+#[test]
+fn fixture_home_room_binding_is_enforced() {
+    // 回归：把高一(1)班的政治从本班教室挪到当时空着的教室，原先 0 违反。
+    let (p, tt) = testgen::generate(42);
+    let pol_subject = p.subjects.iter().find(|s| s.name == "政治").unwrap().id;
+    let req = p
+        .requirements
+        .iter()
+        .find(|r| r.class == ClassId(0) && r.subject == pol_subject)
+        .expect("夹具中高一(1)班有政治需求");
+    assert_eq!(req.room, None, "普通课不应指定教室");
+    let home = p.classes[0].home_room;
+    // 取一节课，找一间该槽确实空着的教室（避免引入教室冲突干扰断言）。
+    let idx = tt
+        .lessons
+        .iter()
+        .position(|l| l.requirement == req.id)
+        .unwrap();
+    let slot = tt.lessons[idx].slot;
+    let free_room = (0..p.rooms.len())
+        .map(|i| RoomId(i as u32))
+        .find(|&r| r != home && tt.lessons.iter().all(|l| l.slot != slot || l.room != r))
+        .expect("该槽应存在空教室");
+    let mut bad = tt.clone();
+    bad.lessons[idx].room = free_room;
+    let v = validate(&p, &bad);
+    assert_eq!(v.len(), 1, "应只有一条教室不符：{v:?}");
+    assert_eq!(
+        v[0].kind,
+        ViolationKind::RoomMismatch {
+            requirement: req.id,
+            expected: home,
+            actual: free_room,
+        }
+    );
 }
 
 #[test]

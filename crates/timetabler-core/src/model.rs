@@ -153,9 +153,10 @@ pub struct Requirement {
     pub double_period: bool,
     /// 指定教室（如实验室、操场）；None 表示用本班教室。
     ///
-    /// 这是硬约束：课节必须排在指定的这一间，否则校验器报
-    /// [`crate::ViolationKind::RoomMismatch`]。（当前按「指定到间」处理；
-    /// 「同类型教室任选一间」的诉求留待后续引入教室类型。）
+    /// Some 与 None 同为硬约束：课节必须排在 [`Requirement::room_or_home`]
+    /// 决定的教室，否则校验器报 [`crate::ViolationKind::RoomMismatch`]。
+    /// （当前按「指定到间」处理；「同类型教室任选」「普通课可浮动」的诉求
+    /// 留待后续引入教室类型 / 浮动标记。）
     pub room: Option<RoomId>,
 }
 
