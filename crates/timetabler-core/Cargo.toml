@@ -1,0 +1,17 @@
+[package]
+name = "timetabler-core"
+description = "排课核心：数据模型、位图时间槽、硬约束校验器（纯计算，无 IO）"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# 刻意保持零依赖：位图自己实现，不引入 HashMap 之外的运行时结构。
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "validate"
+harness = false

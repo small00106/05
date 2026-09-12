@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/timetabler-core"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.79"
+license = "MIT"
+
+[profile.bench]
+debug = true
